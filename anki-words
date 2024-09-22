@@ -1,0 +1,70 @@
+#!/usr/bin/python
+import os
+import re
+import json
+import requests
+import urllib.request
+
+from dotenv import load_dotenv
+
+DECK_NAME = "Words"
+AUDIO_PATH = f"{os.environ.get('HOME')}/.local/share/sounds"
+
+
+def invoke(action, **params):
+    requestJson = json.dumps({'action': action, 'params': params, 'version': 6}).encode('utf-8')
+    response = json.load(urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8765', requestJson)))
+    if len(response) != 2:
+        print("[Error] Response has an unexpected number of fields")
+    elif 'error' not in response:
+        print("[Error] Response is missing required error field")
+    elif 'result' not in response:
+        print("[Error] Response is missing required result field")
+    elif response['error'] is not None:
+        print(f"[Error] {response['error']}")
+    else:
+        print("[INFO] Successfully invoked action:", action)
+        return response['result']
+
+
+def normalize_user_input(users_input):
+    def get_translation(text, target, source):
+        response = requests.post(url="https://translation.googleapis.com/language/translate/v2",
+                                 data={"q": text, "target": target, "source": source, "key": os.environ.get('GOOGLE_API_KEY')})
+        if response.status_code == 200:
+            return response.json()["data"]["translations"][0]["translatedText"]
+        print("[Error]: Request failed", response.status_code, response.text)
+    t = re.sub(r"[^a-zA-Zа-яА-Я]", "", users_input)
+    if re.match(r"^[а-яА-Я]+$", t):
+        return users_input, get_translation(users_input, target="en", source="ru")
+    elif re.match(r"^[a-zA-Z]+$", t):
+        return get_translation(users_input, target="ru", source="en"), users_input
+    print("[Error] Incorrect input\nTry again:")
+
+
+def text_to_speech(text, path):
+    response = requests.post(url="https://api.voicerss.org", data={"key": os.environ.get('VOICERSS_API_KEY'), "src": text, "hl": "en-us", "c": "mp3", "f": "48khz_16bit_mono", "v": "Mary"})
+    if response.status_code == 200 and "ERROR" not in response.text:
+        with open(path, "wb") as file:
+            file.write(response.content)
+        return None
+    print("[Error] Request failed:", response.status_code, response.text)
+
+
+def main():
+    load_dotenv()
+    if not os.path.exists(AUDIO_PATH):
+        os.makedirs(AUDIO_PATH)
+    invoke('createDeck', deck=DECK_NAME)
+    while True:
+        if (text := normalize_user_input(input("Enter a text: "))) and None not in text:
+            ru_text, eng_text = text
+            file_name = f"{eng_text}.mp3"
+            file_path = f"{AUDIO_PATH}/{file_name}"
+            text_to_speech(eng_text, path=file_path)
+            invoke("storeMediaFile", filename=file_name, path=file_path)
+            invoke("addNote", note={"deckName": DECK_NAME, "modelName": "Basic", "fields": {"Front": f"{eng_text}<br>[sound:{file_path}]", "Back": ru_text}})
+
+
+if __name__ == '__main__':
+    main()
